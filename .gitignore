@@ -13,3 +13,4 @@ data/saved_pose/
 *.sh
 lightning_logs/
 wandb/
+.vscode/

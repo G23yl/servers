@@ -61,40 +61,6 @@ def merge_samples(sample_jsons):
     with open("final_samples.json", "w") as f:
         json.dump(final, f, indent=4)
 
-def test_cv2_decord():
-    import time
-    import cv2
-    import decord
-    videos_list = [
-        "/mnt/workspace/tusifan/Kairos_world_model/fractal20220817_data/processed/17090/video/rgb.mp4",
-        "/mnt/workspace/tusifan/Kairos_world_model/fractal20220817_data/processed/12848/video/rgb.mp4",
-        "/mnt/workspace/tusifan/Kairos_world_model/fractal20220817_data/processed/43761/video/rgb.mp4",
-        "/mnt/workspace/tusifan/Kairos_world_model/fractal20220817_data/processed/52495/video/rgb.mp4",
-        "/mnt/workspace/tusifan/Kairos_world_model/fractal20220817_data/processed/61173/video/rgb.mp4"
-    ]
-    
-    start_time = time.time()
-    for video in videos_list:
-        frames = []
-        cap = cv2.VideoCapture(video)
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frames.append(frame)
-        cap.release()
-    end_time = time.time()
-    print(f"cv2: {end_time - start_time}s")
-
-    start_time = time.time()
-    for video in videos_list:
-        vid = decord.VideoReader(video)
-        v = vid.get_batch(list(range(len(vid)))).asnumpy()
-    end_time = time.time()
-    print(f"decord: {end_time - start_time}s")
-
-
 if __name__ == "__main__":
     # get_bridge_samples()
     # get_fractal_samples()
