@@ -1065,7 +1065,7 @@ class KairosMotModel(nn.Module):
         )
 
         num_layers = len(self.video_module.model.blocks)
-        interval = 4
+        interval = 2
         for layer_idx in range(num_layers):
             if layer_idx % interval == 0:
                 if self.use_gradient_checkpointing_offload:
