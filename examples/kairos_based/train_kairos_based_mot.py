@@ -140,12 +140,12 @@ def main():
         logger.info(f"Number of trainable parameters: {num_params / 1e9:.2f}B")
 
     ## prepare dataset
-    # dataset = KairosMultiModalDataset(
-    #     data_root=args.data_path,
-    #     modals=["depth", "flow"],
-    #     samples_path="final_samples.json",
-    # )
-    dataset = DummyKairosDataset()
+    dataset = KairosMultiModalDataset(
+        data_root=args.data_path,
+        modals=["depth", "flow"],
+        samples_path="final_samples.json",
+    )
+    # dataset = DummyKairosDataset()
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -218,9 +218,6 @@ def main():
 
             global_step += 1
             progress_bar.update(1)
-
-            if accelerator.is_local_main_process:
-                logger.debug("1 step finish!!!")
 
             ## log
             if accelerator.is_local_main_process and args.use_wandb:
