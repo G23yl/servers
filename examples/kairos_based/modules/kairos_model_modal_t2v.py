@@ -173,6 +173,50 @@ class VideoModule(nn.Module):
         x = video_latent + ffn_out * adaln_modulation[5].squeeze(2)
         return x
 
+    def process_self_attn(
+        self,
+        video_latent: torch.Tensor,
+        video_adaln_modulation,
+        video_freqs: torch.Tensor,
+        layer_idx: int,
+        grid_size,
+    ):
+        # standard self-attention for ablation test
+        video_layer = self.model.blocks[layer_idx]
+        (f, h, w) = grid_size
+        L = h * w
+        # pre-norm modulation
+        norm_video_latent = modulate(
+            video_layer.self_attn_norm(video_latent),
+            video_adaln_modulation[0].squeeze(2),
+            video_adaln_modulation[1].squeeze(2),
+        )
+        if video_layer.use_linear_attn:
+            chunk_size = 40768 // 7
+            ## video branch
+            if norm_video_latent.shape[1] > chunk_size:
+                cache = fla_Cahce.from_legacy_cache()
+                outputs = []
+                for start in range(0, norm_video_latent.shape[1], chunk_size):
+                    x_chunk = norm_video_latent[:, start : start + chunk_size, :]
+                    out_chunk, _, cache = video_layer.gated_delta(
+                        x_chunk, past_key_values=cache, use_cache=True
+                    )
+                    outputs.append(out_chunk)
+                video_out = torch.cat(outputs, dim=1)
+            else:
+                video_out, _, _ = video_layer.gated_delta(norm_video_latent)
+        else:
+            video_out = video_layer.self_attn.sforward(
+                norm_video_latent,
+                video_freqs,
+                f,
+                L,
+            )
+        video_latent = video_latent + video_out * video_adaln_modulation[2].squeeze(2)
+
+        return video_latent
+
     def process_joint_attention(
         self,
         video_latent: torch.Tensor,
@@ -963,4 +1007,450 @@ class KairosMotModel(nn.Module):
                 "total_loss": tot_loss,
             }
         return video_loss, modal_loss, tot_loss
-    
+
+
+class KairosModel(nn.Module):
+    def __init__(
+        self,
+        device="cpu",
+        torch_dtype=torch.bfloat16,
+        use_gradient_checkpointing: bool = False,
+        use_gradient_checkpointing_offload: bool = False,
+    ):
+        super().__init__()
+        self.device = device
+        self.torch_dtype = torch_dtype
+        self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
+        self.config = {
+            "dim": 2560,
+            "in_dim": 16,
+            "ffn_dim": 10240,
+            "out_dim": 16,
+            "text_dim": 3584,
+            "freq_dim": 256,
+            "eps": 1e-6,
+            "patch_size": (1, 2, 2),
+            "num_heads": 20,
+            "num_layers": 32,
+            "has_image_input": False,
+            "seperated_timestep": True,
+            "require_vae_embedding": False,
+            "require_clip_embedding": False,
+            "fuse_vae_embedding_in_latents": True,
+            "dilated_lengths": [1, 1, 4, 1],
+            "use_seq_parallel": False,
+            "use_tp_in_getaeddeltanet": False,
+            "use_tp_in_self_attn": False,
+        }
+        video_dit = KairosVideoDiT(**self.config)
+        self.video_module = VideoModule(video_dit)
+
+    @classmethod
+    def from_checkpoint(
+        cls, checkpoint_path: str, device="cpu", torch_dtype=torch.bfloat16, **kwargs
+    ):
+        """
+        Load model from a checkpoint file containing all trainable parameters.
+
+        Args:
+            checkpoint_path: Path to the checkpoint file (.pt, .pth, .bin, or .safetensors)
+            device: Device to load the model on
+            torch_dtype: Data type for model weights
+            **kwargs: Additional arguments passed to model constructor
+
+        Returns:
+            KairosMotModel: Loaded model instance
+        """
+        # Create model instance
+        model = cls(device=device, torch_dtype=torch_dtype, **kwargs)
+
+        # Load checkpoint
+        state_dict = load_state_dict(
+            checkpoint_path, torch_dtype=torch_dtype, device=device
+        )
+
+        # Load state dict into model
+        model.load_state_dict(state_dict, strict=True)
+        model.to(device=device, dtype=torch_dtype)
+
+        logger.info(f"Loaded checkpoint from: {checkpoint_path}")
+        return model
+
+    def from_pretrained(self, ckpt_path_manager: Dict[str, str]):
+        state_dict = load_state_dict(ckpt_path_manager["dit"])
+        self.video_module.model.load_state_dict(state_dict, strict=True)
+        self.video_module.to(device=self.device, dtype=self.torch_dtype)
+        logger.info(f"Loaded dit from: {ckpt_path_manager['dit']}")
+
+        self.video_scheduler = FlowMatchScheduler(
+            num_train_timesteps=1000,
+            shift=5,
+            sigma_min=0.0,
+            extra_one_step=True,
+            exponential_shift=True,
+            exponential_shift_mu=1.609,
+        )
+        dynamic_shift_len = ((480 // 8 + 2 - 1) // 2) * ((640 // 8 + 2 - 1) // 2)
+        self.video_scheduler.set_timesteps(
+            num_inference_steps=1000,
+            training=True,
+            dynamic_shift_len=dynamic_shift_len,
+            num_frames=(49 - 1) // 4 + 1,
+        )
+
+    def _modal_fn(
+        self,
+        video_latent,
+        video_prompt_emb,
+        video_attn_mask,
+        video_timestep,
+        latent_video_shape: Tuple[int, int, int],
+    ):
+        # video_latent: [B, S, C]
+        video_latent, video_context, video_freqs, video_grid_size = (
+            self.video_module.prepare_input(video_latent, video_prompt_emb)
+        )
+        # prepare time_embeddings
+        video_t_embedding, video_t_mod = self.video_module.get_time_embedding(
+            video_timestep, *latent_video_shape
+        )
+
+        num_layers = len(self.video_module.model.blocks)
+        for layer_idx in range(num_layers):
+            video_modulation = self.video_module.compute_adaln_modulation(
+                video_t_mod, layer_idx
+            )
+            ## joint attention
+            video_latent = self.video_module.process_self_attn(
+                video_latent,
+                video_modulation,
+                video_freqs,
+                layer_idx,
+                video_grid_size,
+            )
+            ## cross_attention and ffn
+            video_latent = self.video_module.process_cross_attn_ffn(
+                video_latent,
+                video_context,
+                video_attn_mask,
+                video_modulation,
+                layer_idx,
+            )
+        # output head
+        video_out = self.video_module.apply_output_head(
+            video_latent, video_t_embedding, video_grid_size
+        )
+        return video_out
+
+    @torch.no_grad()
+    def inference(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        image: Image.Image,
+        vae: WanVideoVAE,
+        prompter: QwenVLTextEncoder,
+        num_inference_steps: int = 50,
+        num_frames: int = 49,
+        shift: float = 5.0,
+        cfg_scale: float = 5.0,
+        height: int = 480,
+        width: int = 640,
+        tiled: bool = True,
+        tile_size: tuple[int, int] = (30, 52),
+        tile_stride: tuple[int, int] = (15, 26),
+    ):
+        """
+        Inference function
+        Args:
+            prompt: lowercase, no space and dot around
+            modal_type: lowercase, currently only be depth or flow
+        """
+        # scheduler
+        scheduler = FlowMatchScheduler(
+            shift=shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+            exponential_shift=True,
+            exponential_shift_mu=1.609,
+        )
+        ph, pw = (
+            self.video_module.model.patch_size[1],
+            self.video_module.model.patch_size[2],
+        )
+        dynamic_shift_len = ((height // vae.upsampling_factor + ph - 1) // ph) * (
+            (width // vae.upsampling_factor + pw - 1) // pw
+        )
+        scheduler.set_timesteps(
+            num_inference_steps=num_inference_steps,
+            training=False,
+            dynamic_shift_len=dynamic_shift_len,
+            num_frames=(num_frames - 1) // 4 + 1,
+        )
+
+        # generate noise latents
+        batch_size = 1
+        latent_frames = (num_frames - 1) // 4 + 1
+        shape = (
+            batch_size,
+            vae.z_dim,
+            latent_frames,
+            height // vae.upsampling_factor,
+            width // vae.upsampling_factor,
+        )
+        video_latent = torch.randn(shape, dtype=self.torch_dtype, device=self.device)
+
+        # encode prompt
+        video_prompt_emb, video_attn_mask = prompter.encode_prompt(
+            prompt, images=image, positive=True, device=self.device
+        )
+        video_prompt_emb = video_prompt_emb.to(
+            dtype=self.torch_dtype, device=self.device
+        )
+        negative_prompt_emb, negative_attn_mask = prompter.encode_prompt(
+            negative_prompt, images=None, positive=False, device=self.device
+        )
+
+        # process image
+        # [1, C, 1, H, W]
+        image_tensor = (
+            torch.from_numpy(
+                (np.array(image.resize((width, height))) / 255.0 - 0.5) * 2
+            )
+            .permute(2, 0, 1)
+            .unsqueeze(1)
+            .unsqueeze(0)
+            .to(dtype=self.torch_dtype, device=self.device)
+        )
+        first_fused_latent = vae.encode(
+            image_tensor,
+            device=self.device,
+            tiled=tiled,
+            tile_size=tile_size,
+            tile_stride=tile_stride,
+        )
+        video_latent[:, :, 0:1] = first_fused_latent
+
+        latent_f_video, latent_h_video, latent_w_video = video_latent.shape[2:]
+
+        for idx in tqdm(range(num_inference_steps)):
+            timestep = (
+                scheduler.timesteps[idx]
+                .unsqueeze(0)
+                .to(dtype=self.torch_dtype, device=self.device)
+            )
+            dt = (
+                scheduler.sigmas[idx + 1] if idx + 1 < len(scheduler.timesteps) else 0
+            ) - scheduler.sigmas[idx]
+
+            video_pred, modal_pred = self._modal_fn(
+                video_latent,
+                video_prompt_emb,
+                video_attn_mask,
+                timestep,
+                (latent_f_video, latent_h_video, latent_w_video),
+            )
+            if cfg_scale != 1.0:
+                video_pred_nega = self._modal_fn(
+                    video_latent,
+                    negative_prompt_emb,
+                    negative_attn_mask,
+                    timestep,
+                    (latent_f_video, latent_h_video, latent_w_video),
+                )
+                video_pred = cfg_scale * video_pred + (1 - cfg_scale) * video_pred_nega
+            video_latent = video_latent + video_pred * dt
+            video_latent[:, :, 0:1] = first_fused_latent
+        # decoding
+        decoded_video = vae.decode(
+            video_latent,
+            device=self.device,
+            tiled=tiled,
+            tile_size=tile_size,
+            tile_stride=tile_stride,
+        )[0]
+
+        decoded_video = rearrange(decoded_video, "C F H W -> F H W C")
+        decoded_video = (
+            ((decoded_video / 2 + 0.5).clamp(0, 1) * 255.0).clamp(0, 255).float()
+        )
+        decoded_video = [
+            video.cpu().numpy().astype(np.uint8) for video in decoded_video
+        ]
+        return decoded_video
+
+    def forward(
+        self,
+        video_prompt,
+        first_image: torch.Tensor,
+        video: torch.Tensor,
+        prompter: QwenVLTextEncoder,
+        vae: WanVideoVAE,
+        return_dict: bool = False,
+    ):
+        return self.training_step(
+            video_prompt,
+            first_image,
+            video,
+            prompter,
+            vae,
+            return_dict,
+        )
+
+    def training_step(
+        self,
+        video_prompt,
+        first_image: torch.Tensor,
+        video: torch.Tensor,
+        prompter: QwenVLTextEncoder,
+        vae: WanVideoVAE,
+        return_dict: bool = False,
+    ):
+        """
+        Args:
+            video_prompt: List[str]
+            first_image: Tensor [B, H, W, C] 0..255
+            video: Tensor [B, C, F, H, W] -1..1
+        """
+        batch_size = video.shape[0]
+        ## get video and modal prompt_emb
+        ## Note: images must be Image type, so need change Tensor to List[Image]
+        first_image_list = [
+            Image.fromarray(image.cpu().numpy().astype(np.uint8))
+            for image in first_image
+        ]
+        video_prompt_emb, video_attn_mask = prompter.encode_prompt(
+            video_prompt, images=first_image_list, positive=True, device=self.device
+        )
+        video_prompt_emb = video_prompt_emb.to(
+            dtype=self.torch_dtype, device=self.device
+        )
+
+        with torch.no_grad():
+            clean_video_latent = vae.encode(video, device=self.device).to(
+                dtype=self.torch_dtype, device=self.device
+            )
+            first_image_latent = deepcopy(clean_video_latent[:, :, 0:1])
+
+        video_noise = torch.randn_like(
+            clean_video_latent, device=clean_video_latent.device
+        )
+        timestep_id = torch.randint(
+            0, self.video_scheduler.num_train_timesteps, (batch_size,)
+        )
+        timestep = self.video_scheduler.timesteps[timestep_id].to(
+            dtype=self.torch_dtype, device=self.device
+        )
+        sigma = self.video_scheduler.sigmas[timestep_id].to(
+            dtype=self.torch_dtype, device=self.device
+        )
+        noisy_video_latent = (1 - sigma) * clean_video_latent + sigma * video_noise
+        # replace the noisy first frame with the clean one for only video branch
+        noisy_video_latent[:, :, 0:1] = first_image_latent
+
+        latent_f_video, latent_h_video, latent_w_video = noisy_video_latent.shape[2:]
+
+        # video_latent: [B, S, C]
+        video_latent, video_context, video_freqs, video_grid_size = (
+            self.video_module.prepare_input(noisy_video_latent, video_prompt_emb)
+        )
+        # training target
+        video_target = video_noise - clean_video_latent
+        # prepare time_embeddings
+        video_t_embedding, video_t_mod = self.video_module.get_time_embedding(
+            timestep, latent_f_video, latent_h_video, latent_w_video
+        )
+
+        num_layers = len(self.video_module.model.blocks)
+        for layer_idx in range(num_layers):
+            if self.use_gradient_checkpointing_offload:
+                video_modulation = torch_checkpoint(
+                    self.video_module.compute_adaln_modulation,
+                    video_t_mod,
+                    layer_idx,
+                    use_reentrant=False,
+                )
+                with torch.autograd.graph.save_on_cpu():
+                    ## joint attention
+                    video_latent = torch_checkpoint(
+                        self.video_module.process_self_attn,
+                        video_latent,
+                        video_modulation,
+                        video_freqs,
+                        layer_idx,
+                        video_grid_size,
+                        use_reentrant=False,
+                    )
+                    ## cross_attention and ffn
+                    video_latent = torch_checkpoint(
+                        self.video_module.process_cross_attn_ffn,
+                        video_latent,
+                        video_context,
+                        video_attn_mask,
+                        video_modulation,
+                        layer_idx,
+                        use_reentrant=False,
+                    )
+            elif self.use_gradient_checkpointing:
+                video_modulation = torch_checkpoint(
+                    self.video_module.compute_adaln_modulation,
+                    video_t_mod,
+                    layer_idx,
+                    use_reentrant=False,
+                )
+                ## joint attention
+                video_latent = torch_checkpoint(
+                    self.video_module.process_self_attn,
+                    video_latent,
+                    video_modulation,
+                    video_freqs,
+                    layer_idx,
+                    video_grid_size,
+                    use_reentrant=False,
+                )
+                ## cross_attention and ffn
+                video_latent = torch_checkpoint(
+                    self.video_module.process_cross_attn_ffn,
+                    video_latent,
+                    video_context,
+                    video_attn_mask,
+                    video_modulation,
+                    layer_idx,
+                    use_reentrant=False,
+                )
+            else:
+                video_modulation = self.video_module.compute_adaln_modulation(
+                    video_t_mod, layer_idx
+                )
+                ## joint attention
+                video_latent = self.video_module.process_self_attn(
+                    video_latent,
+                    video_modulation,
+                    video_freqs,
+                    layer_idx,
+                    video_grid_size,
+                )
+                ## cross_attention and ffn
+                video_latent = self.video_module.process_cross_attn_ffn(
+                    video_latent,
+                    video_context,
+                    video_attn_mask,
+                    video_modulation,
+                    layer_idx,
+                )
+        # output head
+        video_out = self.video_module.apply_output_head(
+            video_latent, video_t_embedding, video_grid_size
+        )
+
+        assert video_out.shape == video_target.shape
+
+        video_loss = F.mse_loss(
+            video_out.float(), video_target.float(), reduction="mean"
+        )
+        if return_dict:
+            return {
+                "total_loss": video_loss,
+            }
+        return video_loss
