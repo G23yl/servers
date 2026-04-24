@@ -145,12 +145,12 @@ def main():
         logger.info(f"Number of trainable parameters: {num_params / 1e9:.2f}B")
 
     ## prepare dataset
-    # dataset = KairosMultiModalDataset(
-    #     data_root=args.data_path,
-    #     modals=["depth", "flow"],
-    #     samples_path="final_samples.json",
-    # )
-    dataset = DummyKairosDataset()
+    dataset = KairosMultiModalDataset(
+        data_root=args.data_path,
+        modals=["depth", "flow"],
+        samples_path="final_samples.json",
+    )
+    # dataset = DummyKairosDataset()
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
