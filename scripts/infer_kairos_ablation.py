@@ -9,7 +9,7 @@ import torch
 from loguru import logger
 from PIL import Image
 
-from examples.kairos_based.modules.kairos_model_modal_t2v import KairosMotModel
+from examples.kairos_based.modules.kairos_model_modal_t2v import KairosModel
 from examples.kairos_based.modules.text_encoders import QwenVLTextEncoder
 from examples.kairos_based.modules.utils import init_weights_on_device, load_state_dict
 from examples.kairos_based.modules.vaes import WanVideoVAE
@@ -32,8 +32,6 @@ def get_args():
         type=str,
         default="bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, deformed limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards, contorted human joints, objects floating against natural forces, abrupt shot changes",
     )
-    parser.add_argument("--modal_type", type=str)
-    parser.add_argument("--save_combined", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--num_inference_steps", type=int, default=50)
@@ -87,7 +85,7 @@ if __name__ == "__main__":
     vae = vae.to(dtype=torch.bfloat16, device="cuda")
     vae.requires_grad_(False)
 
-    model = KairosMotModel.from_checkpoint(
+    model = KairosModel.from_checkpoint(
         args.checkpoint_path, device="cuda", torch_dtype=torch.bfloat16
     )
 
@@ -96,10 +94,9 @@ if __name__ == "__main__":
     image = Image.open(args.image_path).convert("RGB")
 
     # [F, H, W, C]
-    rgb_video, modal_video = model.inference(
+    rgb_video = model.inference(
         prompt=args.prompt,
         negative_prompt=args.negative_prompt,
-        modal_type=args.modal_type,
         image=image,
         vae=vae,
         prompter=text_encoder,
@@ -118,27 +115,12 @@ if __name__ == "__main__":
     rgb_out_path = os.path.join(
         args.output_path, f"{current_time}_{args.prompt[:50].replace('/', '')}_rgb_{ckpt_step}.mp4"
     )
-    depth_out_path = os.path.join(
-        args.output_path,
-        f"{current_time}_{args.prompt[:50].replace('/', '')}_{args.modal_type}_{ckpt_step}.mp4",
-    )
-    if not args.save_combined:
-        save_video(rgb_out_path, rgb_video, fps=16, quality=5)
-        save_video(depth_out_path, modal_video, fps=16, quality=5)
-        logger.info(f"[Inference] Save videos to {rgb_out_path}")
-    else:
-        combined_out_path = os.path.join(
-            args.output_path,
-            f"{current_time}_{args.prompt[:50].replace('/', '')}_combined_{ckpt_step}.mp4",
-        )
-        combined_video = np.concat([rgb_video, modal_video], axis=-2)
-        save_video(combined_out_path, combined_video, fps=16, quality=5)
-        logger.info(f"[Inference] Save combined videos to {combined_out_path}")
+    save_video(rgb_out_path, rgb_video, fps=16, quality=5)
+    logger.info(f"[Inference] Save videos to {rgb_out_path}")
 
 """
 100 - moved blue cloth to the center of the table Trossen WidowX 250 robot arm
 923: moved the can to the middle of the table Trossen WidowX 250 robot arm
 1000: move the can to the bottom right of the table Trossen WidowX 250 robot arm
 1500: transfer the passoir into its yellow container in the upper right Trossen WidowX 250 robot arm
-8348: pick water bottle google robot
 """

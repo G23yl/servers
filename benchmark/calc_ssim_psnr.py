@@ -6,6 +6,7 @@ from tqdm import tqdm
 from calculate_psnr import calculate_psnr
 import json
 from calculate_ssim import calculate_ssim
+from calculate_lpips import calculate_lpips
 import argparse
 from PIL import Image
 
@@ -27,43 +28,6 @@ def adjust_num_frames(frames, target_num_frames):
     return frames
 
 
-def crop_and_resize_frames(frames, target_size, interpolation="bilinear"):
-    # frames: [F, H, W, C]
-    target_height, target_width = target_size
-    original_height, original_width = frames[0].shape[:2]
-    if original_height == target_height and original_width == target_width:
-        return [frame for frame in frames]
-
-    # ==== interpolation method ====
-    if interpolation == "bilinear":
-        interpolation = cv2.INTER_LINEAR
-    elif interpolation == "nearest":
-        interpolation = cv2.INTER_NEAREST
-    else:
-        interpolation = cv2.INTER_LINEAR
-
-    processed_frames = []
-    for frame in frames:
-        original_height, original_width = frame.shape[:2]
-        aspect_ratio_target = target_width / target_height
-        aspect_ratio_original = original_width / original_height
-
-        if aspect_ratio_original > aspect_ratio_target:
-            new_width = int(aspect_ratio_target * original_height)
-            start_x = (original_width - new_width) // 2
-            cropped_frame = frame[:, start_x : start_x + new_width]
-        else:
-            new_height = int(original_width / aspect_ratio_target)
-            start_y = (original_height - new_height) // 2
-            cropped_frame = frame[start_y : start_y + new_height, :]
-        resized_frame = cv2.resize(
-            cropped_frame, (target_width, target_height), interpolation=interpolation
-        )
-        processed_frames.append(resized_frame)
-
-    return processed_frames
-
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--test_dir", type=str)
 parser.add_argument("--pred", type=str, help="Predicted video base name")
@@ -75,7 +39,11 @@ pred_video_name = f"{args.pred}.mp4"
 target_video_name = f"{args.target}.mp4"
 folders = os.listdir(path)
 ssim_res = []
+ssim_std = []
 psnr_res = []
+psnr_std = []
+lpips_res = []
+lpips_std = []
 
 only_final = True
 verbose = False
@@ -93,7 +61,6 @@ for folder in tqdm(folders):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pred_frames.append(frame)
     cap.release()
-    pred_num_frames = len(pred_frames)
 
     target_video_path = os.path.join(path, folder, target_video_name)
     cap = cv2.VideoCapture(target_video_path)
@@ -105,6 +72,14 @@ for folder in tqdm(folders):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         target_frames.append(frame)
     cap.release()
+
+    pred_num_frames = len(pred_frames)
+    target_num_frames = len(target_frames)
+    if pred_num_frames > target_num_frames:
+        pred_frames = adjust_num_frames(pred_frames, target_num_frames)
+    elif pred_num_frames < target_num_frames:
+        target_frames = adjust_num_frames(target_frames, pred_num_frames)
+
     target_frames = adjust_num_frames(target_frames, pred_num_frames)
     target_frames = np.stack(target_frames, axis=0)
     target_frames = target_frames.transpose(0, 3, 1, 2)
@@ -125,16 +100,30 @@ for folder in tqdm(folders):
     videos1, videos2 = np.array([pred_frames]), np.array([target_frames])
     ssim = calculate_ssim(videos1, videos2, only_final=only_final)
     ssim_res.append(ssim["value"][0])
+    ssim_std.append(ssim["value_std"][0])
     psnr = calculate_psnr(videos1, videos2, only_final=only_final)
     psnr_res.append(psnr["value"][0])
+    psnr_std.append(psnr["value_std"][0])
+    videos1, videos2 = torch.from_numpy(videos1).float(), torch.from_numpy(videos2).float()
+    lpips = calculate_lpips(videos1, videos2, "cuda", only_final=only_final)
+    lpips_res.append(lpips["value"][0])
+    lpips_std.append(lpips["value_std"][0])
 
     del pred_frames, target_frames, videos1, videos2
 
 result = {}
 ssim_res = np.array(ssim_res)
 psnr_res = np.array(psnr_res)
+lpips_res = np.array(lpips_res)
+ssim_std = np.array(ssim_std)
+psnr_std = np.array(psnr_std)
+lpips_std = np.array(lpips_std)
 result["ssim"] = np.mean(ssim_res)
+result["ssim_std"] = np.mean(ssim_std)
 result["psnr"] = np.mean(psnr_res)
+result["psnr_std"] = np.mean(psnr_std)
+result["lpips"] = np.mean(lpips_res)
+result["lpips_std"] = np.mean(lpips_std)
 
 print(result)
 

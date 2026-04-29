@@ -33,43 +33,6 @@ def adjust_num_frames(frames, target_num_frames):
     return frames
 
 
-def crop_and_resize_frames(frames, target_size, interpolation="bilinear"):
-    # frames: [F, H, W, C]
-    target_height, target_width = target_size
-    original_height, original_width = frames[0].shape[:2]
-    if original_height == target_height and original_width == target_width:
-        return [frame for frame in frames]
-
-    # ==== interpolation method ====
-    if interpolation == "bilinear":
-        interpolation = cv2.INTER_LINEAR
-    elif interpolation == "nearest":
-        interpolation = cv2.INTER_NEAREST
-    else:
-        interpolation = cv2.INTER_LINEAR
-
-    processed_frames = []
-    for frame in frames:
-        original_height, original_width = frame.shape[:2]
-        aspect_ratio_target = target_width / target_height
-        aspect_ratio_original = original_width / original_height
-
-        if aspect_ratio_original > aspect_ratio_target:
-            new_width = int(aspect_ratio_target * original_height)
-            start_x = (original_width - new_width) // 2
-            cropped_frame = frame[:, start_x : start_x + new_width]
-        else:
-            new_height = int(original_width / aspect_ratio_target)
-            start_y = (original_height - new_height) // 2
-            cropped_frame = frame[start_y : start_y + new_height, :]
-        resized_frame = cv2.resize(
-            cropped_frame, (target_width, target_height), interpolation=interpolation
-        )
-        processed_frames.append(resized_frame)
-
-    return processed_frames
-
-
 def get_feat(videos: torch.Tensor):
     video_len = len(videos.shape)
     if video_len == 4:
@@ -109,7 +72,6 @@ for folder in tqdm(folders):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pred_frames.append(frame)
     cap.release()
-    pred_num_frames = len(pred_frames)
 
     target_video_path = os.path.join(path, folder, target_video_name)
     cap = cv2.VideoCapture(target_video_path)
@@ -121,7 +83,14 @@ for folder in tqdm(folders):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         target_frames.append(frame)
     cap.release()
-    target_frames = adjust_num_frames(target_frames, pred_num_frames)
+
+    pred_num_frames = len(pred_frames)
+    target_num_frames = len(target_frames)
+    if pred_num_frames > target_num_frames:
+        pred_frames = adjust_num_frames(pred_frames, target_num_frames)
+    elif pred_num_frames < target_num_frames:
+        target_frames = adjust_num_frames(target_frames, pred_num_frames)
+
     target_frames = np.stack(target_frames, axis=0)
     target_frames = torch.from_numpy(target_frames).permute(0, 3, 1, 2)
     target_frames = (target_frames / 255.0).clamp(0, 1)

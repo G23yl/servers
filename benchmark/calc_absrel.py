@@ -57,58 +57,6 @@ def align_depth_least_square(
         return aligned_pred
 
 
-def adjust_num_frames(frames, target_num_frames):
-    frame_count = len(frames)
-    if frame_count < target_num_frames:
-        extra = target_num_frames - frame_count
-        if isinstance(frames, list):
-            frames.extend([frames[-1]] * extra)
-        elif isinstance(frames, torch.Tensor):
-            frame_to_add = [frames[-1]] * extra
-            frames = [f for f in frames] + frame_to_add
-    elif frame_count > target_num_frames:
-        indices = np.linspace(0, frame_count - 1, target_num_frames, dtype=int)
-        frames = [frames[i] for i in indices]
-    return frames
-
-
-def crop_and_resize_frames(frames, target_size, interpolation="bilinear"):
-    # frames: [F, H, W, C]
-    target_height, target_width = target_size
-    original_height, original_width = frames[0].shape[:2]
-    if original_height == target_height and original_width == target_width:
-        return [frame for frame in frames]
-
-    # ==== interpolation method ====
-    if interpolation == "bilinear":
-        interpolation = cv2.INTER_LINEAR
-    elif interpolation == "nearest":
-        interpolation = cv2.INTER_NEAREST
-    else:
-        interpolation = cv2.INTER_LINEAR
-
-    processed_frames = []
-    for frame in frames:
-        original_height, original_width = frame.shape[:2]
-        aspect_ratio_target = target_width / target_height
-        aspect_ratio_original = original_width / original_height
-
-        if aspect_ratio_original > aspect_ratio_target:
-            new_width = int(aspect_ratio_target * original_height)
-            start_x = (original_width - new_width) // 2
-            cropped_frame = frame[:, start_x : start_x + new_width]
-        else:
-            new_height = int(original_width / aspect_ratio_target)
-            start_y = (original_height - new_height) // 2
-            cropped_frame = frame[start_y : start_y + new_height, :]
-        resized_frame = cv2.resize(
-            cropped_frame, (target_width, target_height), interpolation=interpolation
-        )
-        processed_frames.append(resized_frame)
-
-    return processed_frames
-
-
 def abs_relative_difference(output, target, valid_mask=None):
     # [F, H, W]
     actual_output = output
@@ -185,21 +133,18 @@ if __name__ == "__main__":
         pred_frames = torch.from_numpy(pred_frames).permute(0, 3, 1, 2)[
             :, 0
         ]  # [F, H, W]
-        pred_frames = 0.2 + pred_frames * 1.3 / 255.0
+        pred_frames = min_depth + pred_frames * (max_depth - min_depth) / 255.0
         pred_frames = pred_frames.clamp(min_depth, max_depth)
 
-        # [-1, 1]
+        # RollingDepth - [-1, 1]
+        # VideoDepthAnything - [0, 255]
         target_depths = np.load(target_depth_path)["arr_0"].astype(np.float32)
-        # target_depths = (target_depths + 1.0) / 2.0  # 0..1
-        # target_depths *= 255.0
-        target_depths = 0.2 + target_depths * 1.3 / 2.0
+        target_value_range = 255
+        target_depths = min_depth + target_depths * (max_depth - min_depth) / target_value_range
         target_depths = torch.from_numpy(target_depths)  # [F, H, W]
         target_depths = target_depths.clamp(min_depth, max_depth)
 
-        valid_mask = torch.logical_and(
-            target_depths >= min_depth, target_depths <= max_depth
-        ).bool()
-        # valid_mask = None
+        valid_mask = torch.ones_like(target_depths).bool()
 
         pred_frames, scale, shift = align_depth_least_square(
             gt_arr=target_depths.numpy(),

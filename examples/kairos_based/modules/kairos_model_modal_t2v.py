@@ -583,6 +583,7 @@ class KairosMotModel(nn.Module):
             prompt: lowercase, no space and dot around
             modal_type: lowercase, currently only be depth or flow
         """
+        image = image.resize((width, height))
         # scheduler
         scheduler = FlowMatchScheduler(
             shift=shift,
@@ -640,7 +641,7 @@ class KairosMotModel(nn.Module):
         # [1, C, 1, H, W]
         image_tensor = (
             torch.from_numpy(
-                (np.array(image.resize((width, height))) / 255.0 - 0.5) * 2
+                (np.array(image) / 255.0 - 0.5) * 2
             )
             .permute(2, 0, 1)
             .unsqueeze(1)
@@ -1244,7 +1245,7 @@ class KairosModel(nn.Module):
                 scheduler.sigmas[idx + 1] if idx + 1 < len(scheduler.timesteps) else 0
             ) - scheduler.sigmas[idx]
 
-            video_pred, modal_pred = self._modal_fn(
+            video_pred = self._modal_fn(
                 video_latent,
                 video_prompt_emb,
                 video_attn_mask,
