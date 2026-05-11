@@ -429,6 +429,22 @@ class KairosMotModel(nn.Module):
         modal_dit = KairosModalDiT(**self.config)
         self.video_module = VideoModule(video_dit)
         self.modal_module = ModalModule(modal_dit)
+        self.video_scheduler = FlowMatchScheduler(
+            num_train_timesteps=1000,
+            shift=5,
+            sigma_min=0.0,
+            extra_one_step=True,
+            exponential_shift=True,
+            exponential_shift_mu=1.609,
+        )
+        dynamic_shift_len = ((480 // 8 + 2 - 1) // 2) * ((640 // 8 + 2 - 1) // 2)
+        self.video_scheduler.set_timesteps(
+            num_inference_steps=1000,
+            training=True,
+            dynamic_shift_len=dynamic_shift_len,
+            num_frames=(49 - 1) // 4 + 1,
+        )
+        self.modal_scheduler = deepcopy(self.video_scheduler)
 
     @classmethod
     def from_checkpoint(
@@ -468,23 +484,6 @@ class KairosMotModel(nn.Module):
         self.video_module.to(device=self.device, dtype=self.torch_dtype)
         self.modal_module.to(device=self.device, dtype=self.torch_dtype)
         logger.info(f"Loaded dit from: {ckpt_path_manager['dit']}")
-
-        self.video_scheduler = FlowMatchScheduler(
-            num_train_timesteps=1000,
-            shift=5,
-            sigma_min=0.0,
-            extra_one_step=True,
-            exponential_shift=True,
-            exponential_shift_mu=1.609,
-        )
-        dynamic_shift_len = ((480 // 8 + 2 - 1) // 2) * ((640 // 8 + 2 - 1) // 2)
-        self.video_scheduler.set_timesteps(
-            num_inference_steps=1000,
-            training=True,
-            dynamic_shift_len=dynamic_shift_len,
-            num_frames=(49 - 1) // 4 + 1,
-        )
-        self.modal_scheduler = deepcopy(self.video_scheduler)
 
     def _modal_fn(
         self,
@@ -1168,6 +1167,7 @@ class KairosModel(nn.Module):
             prompt: lowercase, no space and dot around
             modal_type: lowercase, currently only be depth or flow
         """
+        image = image.resize((width, height))
         # scheduler
         scheduler = FlowMatchScheduler(
             shift=shift,
@@ -1217,7 +1217,7 @@ class KairosModel(nn.Module):
         # [1, C, 1, H, W]
         image_tensor = (
             torch.from_numpy(
-                (np.array(image.resize((width, height))) / 255.0 - 0.5) * 2
+                (np.array(image) / 255.0 - 0.5) * 2
             )
             .permute(2, 0, 1)
             .unsqueeze(1)

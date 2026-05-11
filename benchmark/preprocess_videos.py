@@ -107,8 +107,11 @@ for folder in tqdm(folders):
         )
         verbose = True
 
-    pred_feat = get_feat(pred_frames)
-    np.save(f"preprocess_data/pred/{folder}.npy", pred_feat)
+    try:
+        pred_feat = get_feat(pred_frames)
+        np.save(f"preprocess_data/pred/{folder}.npy", pred_feat)
+    except Exception:
+        print(f"{folder}")
 
     target_feat = get_feat(target_frames)
     np.save(f"preprocess_data/target/{folder}.npy", target_feat)

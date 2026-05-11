@@ -64,6 +64,7 @@ def get_args():
     parser.add_argument("--lr_warmup_steps", type=int, default=200)
     parser.add_argument("--max_training_steps", type=int, default=5000)
     parser.add_argument("--max_norm", type=float, default=10.0)
+    parser.add_argument("--resume", type=str, default="")
     args = parser.parse_args()
     return args
 
@@ -96,18 +97,25 @@ def main():
             project=args.wandb_project,
         )
 
-    model = KairosMotModel(
-        device=accelerator.device,
-        torch_dtype=weight_type,
-        use_gradient_checkpointing=args.use_gradient_checkpointing,
-        use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
-    )
     ckpt_path_dict = {
         "dit": f"{args.model_path}/models/robot/kairos-robot-4B-480P-16fps.safetensors",
         "text_encoder": f"{args.model_path}/Qwen2.5-VL-7B-Instruct-AWQ/",
         "vae": f"{args.model_path}/Wan2.1-T2V-14B/Wan2.1_VAE.pth",
     }
-    model.from_pretrained(ckpt_path_dict)
+
+    if args.resume != "":
+        model = KairosMotModel.from_checkpoint(
+            args.resume, device=accelerator.device, torch_dtype=weight_type, use_gradient_checkpointing=args.use_gradient_checkpointing,
+            use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
+        )
+    else:
+        model = KairosMotModel(
+            device=accelerator.device,
+            torch_dtype=weight_type,
+            use_gradient_checkpointing=args.use_gradient_checkpointing,
+            use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
+        )
+        model.from_pretrained(ckpt_path_dict)
 
     # text_encoder
     text_encoder = QwenVLTextEncoder(

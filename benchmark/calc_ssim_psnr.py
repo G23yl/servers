@@ -48,7 +48,7 @@ lpips_std = []
 only_final = True
 verbose = False
 
-for folder in tqdm(folders):
+for folder in tqdm(folders[:200]):
     pred_video_path = os.path.join(path, folder, pred_video_name)
     if not os.path.exists(pred_video_path):
         continue
@@ -80,7 +80,6 @@ for folder in tqdm(folders):
     elif pred_num_frames < target_num_frames:
         target_frames = adjust_num_frames(target_frames, pred_num_frames)
 
-    target_frames = adjust_num_frames(target_frames, pred_num_frames)
     target_frames = np.stack(target_frames, axis=0)
     target_frames = target_frames.transpose(0, 3, 1, 2)
     target_frames = (target_frames / 255.0).clip(0, 1)

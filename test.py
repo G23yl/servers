@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 import random
 import json
+from tqdm import tqdm
 
 random.seed(923)
 
@@ -78,6 +79,7 @@ def get_test_samples():
         json.dump(selected, f, indent=4)
 
 def create_test_folders():
+    ##HACK fractal 72614原始video有问题，用75694代替
     from decord import VideoReader
     import imageio
     import shutil
@@ -91,6 +93,9 @@ def create_test_folders():
     test_dir = "/mnt/workspace/tusifan/Kairos_world_model/ks_test_folder"
     for i in tqdm(range(len(test_samples))):
         test_folder = os.path.join(test_dir, f"{i:03}")
+        if os.path.exists(test_folder):
+            continue
+        print(i)
         os.makedirs(test_folder, exist_ok=True)
         sample = test_samples[i]
         ins_path = os.path.join(sample, "instruction.txt")
@@ -110,6 +115,23 @@ def create_test_folders():
         imageio.imwrite(os.path.join(test_folder, "image.png"), first_image)
         shutil.copyfile(video_path, os.path.join(test_folder, "target_rgb.mp4"))
 
+def get_ins():
+    with open("final_samples.json", "r") as f:
+        cont = json.load(f)["train_samples"]
+    count = {
+        "bridge": {},
+        "fractal": {}
+    }
+    for path in tqdm(cont):
+        ins_path = os.path.join(path, "instruction.txt")
+        with open(ins_path, "r") as f:
+            inst = f.read().strip(". ").lower()
+        if "bridge" in path:
+            count["bridge"][inst] = count["bridge"].get(inst, 0) + 1
+        else:
+            count["fractal"][inst] = count["fractal"].get(inst, 0) + 1
+    with open("res.json", "w") as f:
+        json.dump(count, f, indent=4)
 
 if __name__ == "__main__":
     # get_bridge_samples()
@@ -121,13 +143,14 @@ if __name__ == "__main__":
     # merge_samples(a)
     # get_test_samples()
     # create_test_folders()
-    from decord import VideoReader
-    import imageio
-    path = "/mnt/workspace/tusifan/Kairos_world_model/fractal20220817_data/processed/8348"
-    with open(os.path.join(path, "instruction.txt"), "r") as f:
-        ins = f.read()
-    print(ins)
-    vid = VideoReader(os.path.join(path, "video", "rgb.mp4"))
-    video = vid.get_batch(list(range(len(vid)))).asnumpy()
-    first_image = video[0]
-    imageio.imwrite("/mnt/workspace/tusifan/Kairos_world_model/DriveGen/UniAnimate-DiT-utils/data/input/first_image_fractal_8348.png", first_image)
+    get_ins()
+    # from decord import VideoReader
+    # import imageio
+    # path = "/mnt/workspace/tusifan/Kairos_world_model/fractal20220817_data/processed/8348"
+    # with open(os.path.join(path, "instruction.txt"), "r") as f:
+    #     ins = f.read()
+    # print(ins)
+    # vid = VideoReader(os.path.join(path, "video", "rgb.mp4"))
+    # video = vid.get_batch(list(range(len(vid)))).asnumpy()
+    # first_image = video[0]
+    # imageio.imwrite("/mnt/workspace/tusifan/Kairos_world_model/DriveGen/UniAnimate-DiT-utils/data/input/first_image_fractal_8348.png", first_image)

@@ -133,14 +133,23 @@ if __name__ == "__main__":
         pred_frames = torch.from_numpy(pred_frames).permute(0, 3, 1, 2)[
             :, 0
         ]  # [F, H, W]
-        pred_frames = min_depth + pred_frames * (max_depth - min_depth) / 255.0
+        pred_max, pred_min = pred_frames.max(), pred_frames.min()
+        if pred_max == pred_min:
+            pred_frames = (pred_frames - pred_min) / (pred_max - pred_min + 1e-8)
+        else:
+            pred_frames = (pred_frames - pred_min) / (pred_max - pred_min)
+        pred_frames = min_depth + pred_frames * (max_depth - min_depth) / 2
         pred_frames = pred_frames.clamp(min_depth, max_depth)
 
         # RollingDepth - [-1, 1]
         # VideoDepthAnything - [0, 255]
         target_depths = np.load(target_depth_path)["arr_0"].astype(np.float32)
-        target_value_range = 255
-        target_depths = min_depth + target_depths * (max_depth - min_depth) / target_value_range
+        target_max, target_min = target_depths.max(), target_depths.min()
+        if target_max == target_min:
+            target_depths = (target_depths - target_min) / (target_max - target_min + 1e-8)
+        else:
+            target_depths = (target_depths - target_min) / (target_max - target_min)
+        target_depths = min_depth + target_depths * (max_depth - min_depth) / 2
         target_depths = torch.from_numpy(target_depths)  # [F, H, W]
         target_depths = target_depths.clamp(min_depth, max_depth)
 
@@ -161,7 +170,7 @@ if __name__ == "__main__":
         absrel_tot.append(abs_rel)
         delta1_tot.append(d1)
         delta2_tot.append(d2)
-        # print(f"{folder}: {abs_rel}")
+        print(f"{folder}: {abs_rel}")
 
     res = {
         "abs_rel": np.array(absrel_tot).mean(),

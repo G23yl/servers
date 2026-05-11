@@ -10,7 +10,7 @@ import random
 import imageio
 from loguru import logger
 
-from examples.kairos_based.modules.kairos_model_modal_t2v import KairosMotModel
+from examples.kairos_based.modules.kairos_model_modal_t2v import KairosModel
 from examples.kairos_based.modules.text_encoders import QwenVLTextEncoder
 from examples.kairos_based.modules.utils import init_weights_on_device, load_state_dict
 from examples.kairos_based.modules.vaes import WanVideoVAE
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     vae = vae.to(dtype=torch.bfloat16, device=distributed_state.device)
     vae.requires_grad_(False)
 
-    model = KairosMotModel.from_checkpoint(
+    model = KairosModel.from_checkpoint(
         args.checkpoint_path,
         device=distributed_state.device,
         torch_dtype=torch.bfloat16,
@@ -117,20 +117,14 @@ if __name__ == "__main__":
             os.makedirs(video_path, exist_ok=True)
 
             rgb_out_path = os.path.join(video_path, args.rgb_save_name)
-            modal_out_path = os.path.join(
-                video_path, args.rgb_save_name.replace("rgb", str(args.modal_type))
-            )
-
-            if os.path.exists(rgb_out_path) and os.path.exists(modal_out_path):
+            if os.path.exists(rgb_out_path):
                 continue
-
             print(folder)
 
             # [F, H, W, C]
-            rgb_video, modal_video = model.inference(
+            rgb_video = model.inference(
                 prompt=prompt,
                 negative_prompt=args.negative_prompt,
-                modal_type=args.modal_type,
                 image=image,
                 vae=vae,
                 prompter=text_encoder,
@@ -144,4 +138,3 @@ if __name__ == "__main__":
             )
 
             save_video(rgb_out_path, rgb_video, fps=8)
-            save_video(modal_out_path, modal_video, fps=8)
