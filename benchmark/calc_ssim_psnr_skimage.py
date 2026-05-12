@@ -3,9 +3,8 @@ import cv2
 import os
 import numpy as np
 from tqdm import tqdm
-from calculate_psnr import calculate_psnr
 import json
-from calculate_ssim import calculate_ssim
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 # from calculate_lpips import calculate_lpips
 import argparse
 from PIL import Image
@@ -26,6 +25,89 @@ def adjust_num_frames(frames, target_num_frames):
         indices = np.linspace(0, frame_count - 1, target_num_frames, dtype=int)
         frames = [frames[i] for i in indices]
     return frames
+
+
+def to_numpy_frames(frames):
+    if isinstance(frames, torch.Tensor):
+        frames = frames.detach().cpu().numpy()
+    return np.asarray(frames, dtype=np.float32)
+
+
+def channel_first_to_last(frame):
+    if frame.ndim == 3 and frame.shape[0] in (1, 3):
+        return np.transpose(frame, (1, 2, 0))
+    return frame
+
+
+def prepare_frame_for_skimage(frame):
+    frame = channel_first_to_last(frame)
+    if frame.ndim == 3 and frame.shape[-1] == 1:
+        return np.squeeze(frame, axis=-1), None
+    channel_axis = -1 if frame.ndim == 3 else None
+    return frame, channel_axis
+
+
+def calculate_skimage_metrics(videos1, videos2, only_final=False):
+    # videos: [batch_size, timestamps, channel, h, w], pixel values in [0, 1]
+    assert videos1.shape == videos2.shape
+
+    ssim_results = []
+    psnr_results = []
+
+    for video_num in range(videos1.shape[0]):
+        video1 = videos1[video_num]
+        video2 = videos2[video_num]
+        ssim_results_of_a_video = []
+        psnr_results_of_a_video = []
+
+        for clip_timestamp in range(len(video1)):
+            img1, channel_axis = prepare_frame_for_skimage(video1[clip_timestamp])
+            img2, _ = prepare_frame_for_skimage(video2[clip_timestamp])
+
+            ssim_results_of_a_video.append(
+                structural_similarity(
+                    img1,
+                    img2,
+                    data_range=1.0,
+                    channel_axis=channel_axis,
+                )
+            )
+            psnr_results_of_a_video.append(
+                peak_signal_noise_ratio(img1, img2, data_range=1.0)
+            )
+
+        ssim_results.append(ssim_results_of_a_video)
+        psnr_results.append(psnr_results_of_a_video)
+
+    ssim_results = np.array(ssim_results)
+    psnr_results = np.array(psnr_results)
+
+    if only_final:
+        return {
+            "ssim": {
+                "value": [np.mean(ssim_results)],
+                "value_std": [np.std(ssim_results)],
+            },
+            "psnr": {
+                "value": [np.mean(psnr_results)],
+                "value_std": [np.std(psnr_results)],
+            },
+        }
+
+    ssim = []
+    ssim_std = []
+    psnr = []
+    psnr_std = []
+    for clip_timestamp in range(videos1.shape[1]):
+        ssim.append(np.mean(ssim_results[:, clip_timestamp]))
+        ssim_std.append(np.std(ssim_results[:, clip_timestamp]))
+        psnr.append(np.mean(psnr_results[:, clip_timestamp]))
+        psnr_std.append(np.std(psnr_results[:, clip_timestamp]))
+
+    return {
+        "ssim": {"value": ssim, "value_std": ssim_std},
+        "psnr": {"value": psnr, "value_std": psnr_std},
+    }
 
 
 parser = argparse.ArgumentParser()
@@ -84,7 +166,10 @@ for folder in tqdm(folders):
     target_frames = target_frames.transpose(0, 3, 1, 2)
     target_frames = (target_frames / 255.0).clip(0, 1)
 
-    pred_frames = [Image.fromarray(f).resize((target_frames.shape[-1], target_frames.shape[-2])) for f in pred_frames]
+    pred_frames = [
+        Image.fromarray(f).resize((target_frames.shape[-1], target_frames.shape[-2]))
+        for f in pred_frames
+    ]
     pred_frames = [np.array(f) for f in pred_frames]
     pred_frames = np.stack(pred_frames, axis=0)
     pred_frames = torch.from_numpy(pred_frames).permute(0, 3, 1, 2)
@@ -96,14 +181,15 @@ for folder in tqdm(folders):
         )
         verbose = True
 
-    videos1, videos2 = np.array([pred_frames]), np.array([target_frames])
-    ssim = calculate_ssim(videos1, videos2, only_final=only_final)
+    videos1 = to_numpy_frames(pred_frames)[None]
+    videos2 = to_numpy_frames(target_frames)[None]
+    metrics = calculate_skimage_metrics(videos1, videos2, only_final=only_final)
+    ssim = metrics["ssim"]
     ssim_res.append(ssim["value"][0])
     ssim_std.append(ssim["value_std"][0])
-    psnr = calculate_psnr(videos1, videos2, only_final=only_final)
+    psnr = metrics["psnr"]
     psnr_res.append(psnr["value"][0])
     psnr_std.append(psnr["value_std"][0])
-    videos1, videos2 = torch.from_numpy(videos1).float(), torch.from_numpy(videos2).float()
     # lpips = calculate_lpips(videos1, videos2, "cuda", only_final=only_final)
     # lpips_res.append(lpips["value"][0])
     # lpips_std.append(lpips["value_std"][0])
