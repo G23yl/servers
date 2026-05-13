@@ -152,7 +152,7 @@ def load_base_model(args, ckpt_path_dict, accelerator, weight_type):
 def main():
     args = get_args()
     setup_seed(923)
-    accelerator = Accelerator()
+    accelerator = Accelerator(gradient_accumulation_steps=4)
 
     weight_type = torch.float32
     if accelerator.mixed_precision == "bf16":
@@ -236,17 +236,17 @@ def main():
     # with open("trainable_params.txt", "w") as f:
     #     trainable_params = [name for name, p in model.named_parameters() if p.requires_grad]
     #     f.write("\n".join(trainable_params))
-    num_params = sum(p.numel() for p in parameters_optim)
-    if accelerator.is_local_main_process:
-        logger.info(f"Number of trainable LoRA parameters: {num_params / 1e6:.2f}M")
+    # num_params = sum(p.numel() for p in parameters_optim)
+    # if accelerator.is_local_main_process:
+    #     logger.info(f"Number of trainable LoRA parameters: {num_params / 1e6:.2f}M")
 
-    ## prepare dataset
-    # dataset = KairosMultiModalDataset(
-    #     data_root=args.data_path,
-    #     modals=["depth", "flow"],
-    #     samples_path="final_samples.json",
-    # )
-    dataset = DummyKairosDataset()
+    # prepare dataset
+    dataset = KairosMultiModalDataset(
+        data_root=args.data_path,
+        modals=["depth", "flow"],
+        samples_path="final_samples.json",
+    )
+    # dataset = DummyKairosDataset()
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
