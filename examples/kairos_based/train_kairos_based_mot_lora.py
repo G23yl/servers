@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import wandb
-from examples.kairos_based.kairos_dataset import KairosMultiModalDataset
+from examples.kairos_based.kairos_dataset import KairosMultiModalDataset, DummyKairosDataset
 from examples.kairos_based.modules.kairos_model_modal_t2v import KairosMotModel
 from examples.kairos_based.modules.text_encoders import QwenVLTextEncoder
 from examples.kairos_based.modules.utils import init_weights_on_device, load_state_dict
@@ -241,11 +241,12 @@ def main():
         logger.info(f"Number of trainable LoRA parameters: {num_params / 1e6:.2f}M")
 
     ## prepare dataset
-    dataset = KairosMultiModalDataset(
-        data_root=args.data_path,
-        modals=["depth", "flow"],
-        samples_path="final_samples.json",
-    )
+    # dataset = KairosMultiModalDataset(
+    #     data_root=args.data_path,
+    #     modals=["depth", "flow"],
+    #     samples_path="final_samples.json",
+    # )
+    dataset = DummyKairosDataset()
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
