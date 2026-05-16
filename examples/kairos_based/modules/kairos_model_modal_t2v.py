@@ -485,6 +485,45 @@ class KairosMotModel(nn.Module):
         self.modal_module.to(device=self.device, dtype=self.torch_dtype)
         logger.info(f"Loaded dit from: {ckpt_path_manager['dit']}")
 
+    def load_lora_weights(
+        self,
+        lora_path: str,
+        is_trainable: bool = False,
+        adapter_name: str = "default",
+        merge: bool = False,
+        **kwargs,
+    ):
+        """
+        Load a PEFT LoRA adapter trained on KairosMotModel.
+
+        Args:
+            lora_path: Path to the saved LoRA adapter directory.
+            is_trainable: Whether the adapter should remain trainable after loading.
+            adapter_name: Name used by PEFT for the loaded adapter.
+            merge: If True, merge LoRA weights into the base model and return it.
+            **kwargs: Extra keyword arguments forwarded to PeftModel.from_pretrained.
+
+        Returns:
+            A PeftModel wrapping this model, or the merged base model when merge=True.
+        """
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(
+            self,
+            lora_path,
+            is_trainable=is_trainable,
+            adapter_name=adapter_name,
+            **kwargs,
+        )
+        model.to(device=self.device, dtype=self.torch_dtype)
+
+        if merge:
+            model = model.merge_and_unload()
+            model.to(device=self.device, dtype=self.torch_dtype)
+
+        logger.info(f"Loaded LoRA adapter from: {lora_path}")
+        return model
+
     def _modal_fn(
         self,
         video_latent,
